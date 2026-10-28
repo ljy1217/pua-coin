@@ -86,9 +86,15 @@ src = ataOf(me);
 try { await refresh(); } catch (e) { $('wal').innerHTML = '<div class="err">잔액 조회 실패: ' + esc(e.message || e) + '</div>'; throw 0; }
 $('form').hidden = false;
 
+// 링크로 미리 채우기: ...#to=주소&amt=개수
+try { const h = new URLSearchParams(location.hash.slice(1)); if (h.get('to')) $('to').value = h.get('to'); if (h.get('amt')) $('amt').value = h.get('amt'); } catch {}
+// 같은 곳에 같은 개수를 다시 보내려 하면 한 번 더 묻는다(10분 안)
+const lastKey = 'pua_last_send';
+const lastSend = () => { try { return JSON.parse(localStorage.getItem(lastKey) || 'null'); } catch { return null; } };
 $('amt').oninput = () => { const v = parse($('amt').value); $('amtHint').textContent = v == null ? ($('amt').value ? '숫자만 넣어 주세요 (소수점 6자리까지)' : '') : kor(v); };
 document.querySelectorAll('[data-p]').forEach((b) => b.onclick = () => { const v = have * BigInt(b.dataset.p) / 100n; $('amt').value = fmt(v).replace(/,/g, ''); $('amt').oninput(); });
 $('to').oninput = () => { $('toHint').textContent = ''; };
+$('amt').oninput();
 
 let pending = false;
 $('check').onclick = async () => {
@@ -104,6 +110,8 @@ $('check').onclick = async () => {
   const info = await conn.getAccountInfo(to).catch(() => null);
   if (info && !info.owner.equals(SYS)) return fail('받는 주소가 일반 지갑이 아닙니다. 받는 지갑 주소를 다시 확인하세요.');
   const dst = ataOf(to);
+  const prev = lastSend();
+  const dup = prev && prev.from === me.toBase58() && prev.to === to.toBase58() && prev.amt === amt.toString() && Date.now() - prev.at < 600_000;
   const build = async () => {
     const bh = await conn.getLatestBlockhash('confirmed');
     const ixs = [W.ComputeBudgetProgram.setComputeUnitLimit({ units: 60_000 }), W.ComputeBudgetProgram.setComputeUnitPrice({ microLamports: CU_PRICE }),
@@ -122,7 +130,7 @@ $('check').onclick = async () => {
     if (sol < cost) return fail('SOL이 모자랍니다.');
   } catch (e) { return fail('검사 중 오류: ' + (e.message || e)); }
   const before = await bal(dst);
-  $('box').innerHTML = `<div class="card"><b>이대로 보낼까요?</b><table>
+  $('box').innerHTML = (dup ? `<div class="err"><b>⚠️ ${Math.ceil((Date.now() - prev.at) / 60000)}분 전에 같은 주소로 같은 개수를 이미 보냈어요.</b><br>정말 한 번 더 보내려는 게 아니면 [취소]를 누르세요.</div>` : '') + `<div class="card"><b>이대로 보낼까요?</b><table>
     <tr><td>받는 지갑</td><td>${to.toBase58()}</td></tr>
     <tr><td>보낼 PUA</td><td><b>${fmt(amt)}</b><br><span class="hint">${kor(amt)}</span></td></tr>
     <tr><td>비용</td><td>약 ${(cost / 1e9).toFixed(6)} SOL</td></tr></table>
@@ -150,6 +158,8 @@ $('check').onclick = async () => {
         if (!s && (await conn.getBlockHeight().catch(() => 0)) > bh.lastValidBlockHeight) { await sleep(3000); if (!(await conn.getSignatureStatuses([sig], { searchTransactionHistory: true })).value[0]) throw new Error('승인이 늦어 거래가 버려졌습니다(아무것도 안 보내짐). 다시 해 주세요.'); }
         await sleep(2000);
       }
+      try { localStorage.setItem(lastKey, JSON.stringify({ from: me.toBase58(), to: to.toBase58(), amt: amt.toString(), at: Date.now() })); } catch {}
+      $('to').value = ''; $('amt').value = ''; $('amt').oninput(); history.replaceState(null, '', location.pathname);
       const after = await bal(dst);
       await refresh();
       const okAmt = after - before === amt;
